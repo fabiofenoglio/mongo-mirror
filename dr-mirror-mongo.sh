@@ -45,7 +45,11 @@ COMPRESS="${MONGO_ARCHIVE_COMPRESS:-1}"
 DO_RESTORE="yes"
 STARTED_AT="$(date -u +%s)"
 ARCHIVE=""
-STATUS="preflight_failed"
+# Not "preflight_failed": that is a diagnosis, and a diagnosis that is merely the
+# initial value of a variable is a lie the marker tells to whoever reads it at
+# 3am. "aborted" means exactly what it says — the script died somewhere it had
+# no answer for, go and read the log.
+STATUS="aborted"
 DOCS=0
 COLLS=0
 
@@ -87,7 +91,7 @@ done
 
 log()  { printf '\n==> %s\n' "$*"; }
 info() { printf '    %s\n' "$*"; }
-die()  { STATUS="${2:-preflight_failed}"; printf '\nERROR: %s\n' "$1" >&2; exit "${3:-1}"; }
+die()  { STATUS="${2:-aborted}"; printf '\nERROR: %s\n' "$1" >&2; exit "${3:-1}"; }
 
 # The marker is written on EVERY run, failures included: it is the file an
 # external monitor watches to notice the job has stopped working. A backup job
@@ -265,11 +269,25 @@ swap() {
   " 2>/dev/null | grep -E "collections moved" | sed 's/^/    /' || die "swap failed" restore_failed 5
 }
 
+# A run writes either a .gz or a .archive, never both, so one of the two patterns
+# always matches nothing and `ls` exits non-zero. Under `set -e` that aborted the
+# script here — after dump, restore and verify had all succeeded — so every good
+# run was recorded as a failure and no archive was ever rotated away. Collect the
+# list once, tolerate the empty match, and reuse it.
+list_archives() {
+  ls -1t "$WORKDIR"/mongo-"$DB_NAME"-*.gz "$WORKDIR"/mongo-"$DB_NAME"-*.archive 2>/dev/null || true
+}
+
 rotate() {
-  local n; n=$(ls -1t "$WORKDIR"/mongo-"$DB_NAME"-*.gz "$WORKDIR"/mongo-"$DB_NAME"-*.archive 2>/dev/null | wc -l | tr -d ' ')
+  local list n
+  list="$(list_archives)"
+  [[ -n "$list" ]] || return 0
+  n=$(printf '%s\n' "$list" | wc -l | tr -d ' ')
   if [[ "$n" -gt "$KEEP_ARCHIVES" ]]; then
-    ls -1t "$WORKDIR"/mongo-"$DB_NAME"-*.gz "$WORKDIR"/mongo-"$DB_NAME"-*.archive | tail -n +$((KEEP_ARCHIVES+1)) | xargs rm -f
-    info "archives kept: $KEEP_ARCHIVES"
+    printf '%s\n' "$list" | tail -n +$((KEEP_ARCHIVES+1)) | xargs rm -f
+    info "archives: kept $KEEP_ARCHIVES of $n"
+  else
+    info "archives: $n, below the retention of $KEEP_ARCHIVES"
   fi
 }
 
