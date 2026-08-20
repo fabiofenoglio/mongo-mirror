@@ -62,6 +62,21 @@ something failed:
 | `4` | archive produced but counts differ — **the standby was not touched** |
 | `5` | problem on the destination |
 
+### Archive integrity
+
+Every compressed archive is verified with `gzip -t` before the run is declared successful.
+A truncated archive is the realistic failure here — the network drops, the disk fills, the
+container restarts mid-dump — and a size check alone does not catch it: a half-written file
+is not an empty file.
+
+This matters most with `--no-restore`. When the run also restores and compares counts, a
+damaged archive is caught by the restore itself. Without that step the integrity check is
+the only thing standing between a corrupt archive and the day you need it.
+
+**Known gap**: uncompressed archives (`--no-compress`) are *not* verified. The BSON archive
+format carries no checksum that can be validated without a running mongod, so there is
+nothing cheap to check. If you turn compression off, rely on periodic restore tests.
+
 ### Knowing when it stops working
 
 Every run — successful or not — writes `last-run.json` into the working directory:

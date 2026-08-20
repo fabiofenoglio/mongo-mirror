@@ -196,12 +196,33 @@ counts() { # counts <uri> <db>
   m_sh "$1" "const d=db.getSiblingDB(\"$2\"); d.getCollectionNames().sort().forEach(c=>print(c+\" \"+d.getCollection(c).countDocuments()));" 2>/dev/null | grep -E "^[a-zA-Z]" || true
 }
 
+# A truncated archive is the realistic way this breaks: the network drops, the disk
+# fills, the container is restarted mid-dump. `-s` only proves the file is not empty,
+# and a half-written archive passes that test happily. That is tolerable when the run
+# also restores and compares counts — the restore would choke on it. With --no-restore
+# there is no such backstop, so the archive must be checked here or not at all.
+# `gzip -t` walks the entire stream and costs a fraction of a second.
+verify_archive() {
+  if [[ "$COMPRESS" != "1" ]]; then
+    # Uncompressed BSON archives carry no checksum that can be verified without a
+    # running mongod. Nothing to do here; the gap is documented in the README.
+    return 0
+  fi
+  if ! command -v gzip >/dev/null 2>&1; then
+    info "integrity: gzip unavailable, check skipped"
+    return 0
+  fi
+  gzip -t "$WORKDIR/$ARCHIVE" 2>/dev/null || die "archive is corrupt or truncated" dump_failed 3
+  info "integrity: gzip stream intact"
+}
+
 dump() {
   log "Dumping source"
   local ext="archive"; [[ "$COMPRESS" == "1" ]] && ext="gz"
   ARCHIVE="mongo-${DB_NAME}-$(date -u +%Y%m%d-%H%M%S).${ext}"
   m_dump "$SOURCE_URI" "$ARCHIVE" || die "mongodump failed" dump_failed 3
   [[ -s "$WORKDIR/$ARCHIVE" ]] || die "empty archive" dump_failed 3
+  verify_archive
   info "$ARCHIVE ($(du -h "$WORKDIR/$ARCHIVE" | cut -f1))"
 }
 
