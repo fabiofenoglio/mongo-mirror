@@ -38,6 +38,10 @@ DB_NAME="${MONGO_DB_NAME:-}"
 WORKDIR="${MONGO_MIRROR_WORKDIR:-/backup}"
 IMAGE="${MONGO_TOOLS_IMAGE:-mongo:8}"
 KEEP_ARCHIVES="${MONGO_KEEP_ARCHIVES:-7}"
+# Compression is on by default: standalone, smaller files are simply better.
+# Turn it OFF when the archives are picked up by a deduplicating backup such as
+# restic or borg — see README, "Compression and deduplication".
+COMPRESS="${MONGO_ARCHIVE_COMPRESS:-1}"
 DO_RESTORE="yes"
 STARTED_AT="$(date -u +%s)"
 ARCHIVE=""
@@ -59,6 +63,8 @@ MONGO_TOOLS_IMAGE
 
 Options:
   --db NAME | --workdir DIR | --keep N | --image IMG | --no-restore | -h
+  --no-compress    write an uncompressed archive; use this when a deduplicating
+                   backup (restic, borg) collects the archives — see README
 
 Without a target it only produces the archive.
 USAGE
@@ -73,6 +79,7 @@ while [[ $# -gt 0 ]]; do
     --keep) KEEP_ARCHIVES="$2"; shift 2 ;;
     --image) IMAGE="$2"; shift 2 ;;
     --no-restore) DO_RESTORE="no"; shift ;;
+    --no-compress) COMPRESS=0; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown option: $1" >&2; usage; exit 2 ;;
   esac
@@ -129,19 +136,22 @@ m_sh() {   # m_sh <uri> <js>
   fi
 }
 m_dump() { # m_dump <uri> <archive>
+  local gz=""; [[ "$COMPRESS" == "1" ]] && gz="--gzip"
   if [[ "$MODE" == "native" ]]; then
-    mongodump --uri="$1" --db="$DB_NAME" --archive="$(wpath "$2")" --gzip --quiet
+    mongodump --uri="$1" --db="$DB_NAME" --archive="$(wpath "$2")" $gz --quiet
   else
     docker run --rm -e MURI="$1" -v "$WORKDIR":/work "$IMAGE" \
-      sh -c "mongodump --uri=\"\$MURI\" --db=$DB_NAME --archive=$(wpath "$2") --gzip --quiet"
+      sh -c "mongodump --uri=\"\$MURI\" --db=$DB_NAME --archive=$(wpath "$2") $gz --quiet"
   fi
 }
 m_restore() { # m_restore <uri> <archive> <nsFrom> <nsTo>
+  # The flag must match how the archive was written, or mongorestore fails.
+  local gz=""; [[ "$COMPRESS" == "1" ]] && gz="--gzip"
   if [[ "$MODE" == "native" ]]; then
-    mongorestore --uri="$1" --archive="$(wpath "$2")" --gzip --nsFrom="$3" --nsTo="$4" --quiet
+    mongorestore --uri="$1" --archive="$(wpath "$2")" $gz --nsFrom="$3" --nsTo="$4" --quiet
   else
     docker run --rm -e MURI="$1" -v "$WORKDIR":/work "$IMAGE" \
-      sh -c "mongorestore --uri=\"\$MURI\" --archive=$(wpath "$2") --gzip --nsFrom='$3' --nsTo='$4' --quiet"
+      sh -c "mongorestore --uri=\"\$MURI\" --archive=$(wpath "$2") $gz --nsFrom='$3' --nsTo='$4' --quiet"
   fi
 }
 
@@ -151,6 +161,7 @@ preflight() {
   [[ -n "$DB_NAME" ]] || die "missing database name (MONGO_DB_NAME or --db)" preflight_failed 1
   detect_mode
   info "mongo tools: $MODE"
+  info "compression: $([[ "$COMPRESS" == "1" ]] && echo on || echo off)"
   if [[ "$MODE" == "docker" ]]; then
     command -v docker >/dev/null || die "neither mongo tools on PATH nor docker available" preflight_failed 1
     docker info >/dev/null 2>&1 || die "Docker daemon unreachable" preflight_failed 1
@@ -187,7 +198,8 @@ counts() { # counts <uri> <db>
 
 dump() {
   log "Dumping source"
-  ARCHIVE="mongo-${DB_NAME}-$(date -u +%Y%m%d-%H%M%S).gz"
+  local ext="archive"; [[ "$COMPRESS" == "1" ]] && ext="gz"
+  ARCHIVE="mongo-${DB_NAME}-$(date -u +%Y%m%d-%H%M%S).${ext}"
   m_dump "$SOURCE_URI" "$ARCHIVE" || die "mongodump failed" dump_failed 3
   [[ -s "$WORKDIR/$ARCHIVE" ]] || die "empty archive" dump_failed 3
   info "$ARCHIVE ($(du -h "$WORKDIR/$ARCHIVE" | cut -f1))"
@@ -233,9 +245,9 @@ swap() {
 }
 
 rotate() {
-  local n; n=$(ls -1t "$WORKDIR"/mongo-"$DB_NAME"-*.gz 2>/dev/null | wc -l | tr -d ' ')
+  local n; n=$(ls -1t "$WORKDIR"/mongo-"$DB_NAME"-*.gz "$WORKDIR"/mongo-"$DB_NAME"-*.archive 2>/dev/null | wc -l | tr -d ' ')
   if [[ "$n" -gt "$KEEP_ARCHIVES" ]]; then
-    ls -1t "$WORKDIR"/mongo-"$DB_NAME"-*.gz | tail -n +$((KEEP_ARCHIVES+1)) | xargs rm -f
+    ls -1t "$WORKDIR"/mongo-"$DB_NAME"-*.gz "$WORKDIR"/mongo-"$DB_NAME"-*.archive | tail -n +$((KEEP_ARCHIVES+1)) | xargs rm -f
     info "archives kept: $KEEP_ARCHIVES"
   fi
 }

@@ -92,6 +92,28 @@ the two reach each other over the internal network by service name.
 volume. The other way round, every night you ship yesterday's archive offsite — a mistake
 with no symptoms until the day you need it.
 
+## Compression and deduplication
+
+Archives are gzip-compressed by default. `--no-compress` (or `MONGO_ARCHIVE_COMPRESS=0`)
+writes them raw, and whether that is a good idea depends entirely on what collects them.
+
+A deduplicating backup tool cannot deduplicate compressed data: every compressed archive is
+a fresh stream of unique bytes, so each night costs its full size in the backup repository.
+An uncompressed archive, on the other hand, is mostly identical to yesterday's, so
+content-defined chunking stores only what actually changed.
+
+The catch is that the raw archive is several times larger, both on the local volume and —
+if the backup repository cannot compress — in the repository itself. So:
+
+- **repository with compression** (restic format v2, borg): uncompressed archives win
+  clearly. You get deduplication *and* compression.
+- **repository without compression** (restic format v1): it is roughly a wash on remote
+  storage, and the uncompressed archives cost noticeably more local disk. Keep gzip.
+
+Either way the difference tends to be small in absolute terms. Measure before optimising:
+a deduplicating tool packs data into blobs of a few MB, so per-operation costs on object
+storage stay negligible in both configurations.
+
 ## Constraints and limits
 
 - **The destination cannot be an older major than the source.** The script checks and
