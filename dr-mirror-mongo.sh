@@ -173,6 +173,12 @@ preflight() {
   fi
   [[ -n "$TARGET_URI" ]] || { DO_RESTORE="no"; info "no target given: archive only"; }
   mkdir -p "$WORKDIR" || die "cannot create $WORKDIR" preflight_failed 1
+  # A .partial file can only be the remains of an interrupted run. Final archive
+  # names are published atomically below, so these files are never candidates for
+  # backup or retention and can safely be removed before starting another dump.
+  find "$WORKDIR" -maxdepth 1 -type f \
+    \( -name "mongo-$DB_NAME-*.gz.partial" -o -name "mongo-$DB_NAME-*.archive.partial" \) \
+    -delete || die "cannot clean stale partial archives" preflight_failed 1
   info "archives in $WORKDIR"
 }
 
@@ -206,17 +212,17 @@ counts() { # counts <uri> <db>
 # also restores and compares counts — the restore would choke on it. With --no-restore
 # there is no such backstop, so the archive must be checked here or not at all.
 # `gzip -t` walks the entire stream and costs a fraction of a second.
-verify_archive() {
+verify_archive() { # verify_archive <archive filename>
+  local archive="$1"
   if [[ "$COMPRESS" != "1" ]]; then
     # Uncompressed BSON archives carry no checksum that can be verified without a
     # running mongod. Nothing to do here; the gap is documented in the README.
     return 0
   fi
   if ! command -v gzip >/dev/null 2>&1; then
-    info "integrity: gzip unavailable, check skipped"
-    return 0
+    die "gzip unavailable: cannot verify archive" dump_failed 3
   fi
-  gzip -t "$WORKDIR/$ARCHIVE" 2>/dev/null || die "archive is corrupt or truncated" dump_failed 3
+  gzip -t "$WORKDIR/$archive" 2>/dev/null || die "archive is corrupt or truncated" dump_failed 3
   info "integrity: gzip stream intact"
 }
 
@@ -224,9 +230,14 @@ dump() {
   log "Dumping source"
   local ext="archive"; [[ "$COMPRESS" == "1" ]] && ext="gz"
   ARCHIVE="mongo-${DB_NAME}-$(date -u +%Y%m%d-%H%M%S).${ext}"
-  m_dump "$SOURCE_URI" "$ARCHIVE" || die "mongodump failed" dump_failed 3
-  [[ -s "$WORKDIR/$ARCHIVE" ]] || die "empty archive" dump_failed 3
-  verify_archive
+  local partial="${ARCHIVE}.partial"
+  m_dump "$SOURCE_URI" "$partial" || die "mongodump failed" dump_failed 3
+  [[ -s "$WORKDIR/$partial" ]] || die "empty archive" dump_failed 3
+  verify_archive "$partial"
+  # The temporary file is in the same directory, so rename(2) publishes the
+  # verified archive atomically. A killed process leaves only a conspicuous
+  # .partial file; consumers never observe a half-written final archive.
+  mv -- "$WORKDIR/$partial" "$WORKDIR/$ARCHIVE" || die "cannot publish archive" dump_failed 3
   info "$ARCHIVE ($(du -h "$WORKDIR/$ARCHIVE" | cut -f1))"
 }
 

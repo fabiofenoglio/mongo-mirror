@@ -53,4 +53,19 @@ run "above retention"     10  7 7
 run "empty directory"      0  7 0
 run "exactly at retention" 7  7 7
 
+# Interrupted dumps must not enter the retention count or be removed by rotate.
+partial_dir=$(mktemp -d)
+touch "$partial_dir/mongo-testdb-old.gz.partial"
+WORKDIR="$partial_dir" DB_NAME=testdb KEEP_ARCHIVES=1
+info() { :; }
+eval "$FUNCS"
+rotate
+if [[ -f "$partial_dir/mongo-testdb-old.gz.partial" ]]; then
+  printf 'PASS  %-32s partial preserved\n' "partial archive ignored"
+else
+  printf 'FAIL  %-32s partial was removed\n' "partial archive ignored"
+  FAILED=1
+fi
+rm -rf "$partial_dir"
+
 exit "$FAILED"

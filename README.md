@@ -69,6 +69,13 @@ A truncated archive is the realistic failure here — the network drops, the dis
 container restarts mid-dump — and a size check alone does not catch it: a half-written file
 is not an empty file.
 
+Archives are also published atomically. The dump is written to a `.partial` file in the
+archive directory, verified there when compression provides a checksum, and only then
+renamed to its final name. Consequently, a final `.gz` or `.archive` name always denotes a
+completed dump (and a `.gz` has also passed verification); an interrupted run leaves a
+self-describing `.partial` file that backup tools and archive rotation ignore. Stale partial
+files are removed at the start of the next run.
+
 This matters most with `--no-restore`. When the run also restores and compares counts, a
 damaged archive is caught by the restore itself. Without that step the integrity check is
 the only thing standing between a corrupt archive and the day you need it.
