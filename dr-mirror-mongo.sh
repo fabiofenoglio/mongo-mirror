@@ -310,7 +310,13 @@ main() {
     restore_and_verify
     swap
   else
-    COLLS=$(counts "$SOURCE_URI" "$DB_NAME" | wc -l | tr -d ' ')
+    # No restore means no copy to compare against, but the source counts are
+    # still worth reporting: a marker that says "documents": 0 next to a 33 MB
+    # archive reads exactly like an empty dump, and that is the one alarm you
+    # cannot afford to cry wolf on.
+    local src; src=$(counts "$SOURCE_URI" "$DB_NAME")
+    COLLS=$(printf '%s\n' "$src" | grep -c . || true)
+    DOCS=$(printf '%s\n' "$src" | awk '{s+=$2} END{print s+0}')
   fi
   rotate
   STATUS="ok"
